@@ -108,13 +108,13 @@ private:
   {
     if (wx < origin_x_ || wy < origin_y_ || wz < origin_z_)
       return false;
-    mx = ((wx - origin_x_) / resolution_);
-    my = ((wy - origin_y_) / resolution_);
-    mz = ((wz - origin_z_) / z_resolution_);
+    mx = std::floor((wx - origin_x_) / resolution_);
+    my = std::floor((wy - origin_y_) / resolution_);
+    mz = std::floor((wz - origin_z_) / z_resolution_);
     if (mx < size_x_ && my < size_y_ && mz < size_z_)
       return true;
 
-    return false;
+    return true;
   }
 
   inline bool worldToMap3D(double wx, double wy, double wz, unsigned int& mx, unsigned int& my, unsigned int& mz)

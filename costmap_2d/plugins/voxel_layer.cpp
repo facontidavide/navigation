@@ -82,13 +82,19 @@ void VoxelLayer::reconfigureCB(costmap_2d::VoxelPluginConfig &config, uint32_t l
 {
   enabled_ = config.enabled;
   footprint_clearing_enabled_ = config.footprint_clearing_enabled;
-  max_obstacle_height_ = config.max_obstacle_height;
-  size_z_ = config.z_voxels;
-  origin_z_ = config.origin_z;
   z_resolution_ = config.z_resolution;
+  max_obstacle_height_ = config.max_obstacle_height;
+  size_z_ = std::max( config.z_voxels, (int)std::ceil( max_obstacle_height_ / z_resolution_ ) );
+   //size_z_ = config.z_voxels;
+  origin_z_ = config.origin_z;
   unknown_threshold_ = config.unknown_threshold + (VOXEL_BITS - size_z_);
   mark_threshold_ = config.mark_threshold;
   combination_method_ = config.combination_method;
+
+  ROS_INFO( "max_obstacle_height_ %f", max_obstacle_height_ );
+  ROS_INFO( "z_resolution_ %f", z_resolution_ );
+  ROS_INFO( "size_z_ %d", size_z_ );
+  ROS_INFO( "unknown_threshold_ %d", unknown_threshold_ );
   matchSize();
 }
 
@@ -146,19 +152,21 @@ void VoxelLayer::updateBounds(double robot_x, double robot_y, double robot_yaw, 
     const Observation& obs = *it;
 
     const pcl::PointCloud<pcl::PointXYZ>& cloud = *(obs.cloud_);
+    const std::vector<bool>& in_range = obs.within_range_;
 
     double sq_obstacle_range = obs.obstacle_range_ * obs.obstacle_range_;
 
     for (unsigned int i = 0; i < cloud.points.size(); ++i)
     {
+      const pcl::PointXYZ& point = cloud.points[i];
       // if the obstacle is too high or too far away from the robot we won't add it
-      if (cloud.points[i].z > max_obstacle_height_)
+      if (in_range[i] == false || point.z > max_obstacle_height_ )
         continue;
 
       // compute the squared distance from the hitpoint to the pointcloud's origin
-      double sq_dist = (cloud.points[i].x - obs.origin_.x) * (cloud.points[i].x - obs.origin_.x)
-          + (cloud.points[i].y - obs.origin_.y) * (cloud.points[i].y - obs.origin_.y)
-          + (cloud.points[i].z - obs.origin_.z) * (cloud.points[i].z - obs.origin_.z);
+      double sq_dist = (point.x - obs.origin_.x) * (point.x - obs.origin_.x)
+          + (point.y - obs.origin_.y) * (point.y - obs.origin_.y)
+          + (point.z - obs.origin_.z) * (point.z - obs.origin_.z);
 
       // if the point is far enough away... we won't consider it
       if (sq_dist >= sq_obstacle_range)
@@ -166,12 +174,7 @@ void VoxelLayer::updateBounds(double robot_x, double robot_y, double robot_yaw, 
 
       // now we need to compute the map coordinates for the observation
       unsigned int mx, my, mz;
-      if (cloud.points[i].z < origin_z_)
-      {
-        if (!worldToMap3D(cloud.points[i].x, cloud.points[i].y, origin_z_, mx, my, mz))
-          continue;
-      }
-      else if (!worldToMap3D(cloud.points[i].x, cloud.points[i].y, cloud.points[i].z, mx, my, mz))
+      if (!worldToMap3D(point.x, point.y, point.z, mx, my, mz))
       {
         continue;
       }
@@ -182,7 +185,7 @@ void VoxelLayer::updateBounds(double robot_x, double robot_y, double robot_yaw, 
         unsigned int index = getIndex(mx, my);
 
         costmap_[index] = LETHAL_OBSTACLE;
-        touch((double)cloud.points[i].x, (double)cloud.points[i].y, min_x, min_y, max_x, max_y);
+        touch((double)point.x, (double)point.y, min_x, min_y, max_x, max_y);
       }
     }
   }
@@ -294,6 +297,10 @@ void VoxelLayer::raytraceFreespace(const Observation& clearing_observation, doub
   double map_end_x = origin_x_ + getSizeInMetersX();
   double map_end_y = origin_y_ + getSizeInMetersY();
 
+  ROS_INFO("clearing_observations.size %d", (int)clearing_observation.cloud_->points.size()) ;
+
+  int point_count = 0;
+
   for (unsigned int i = 0; i < clearing_observation.cloud_->points.size(); ++i)
   {
     double wpx = clearing_observation.cloud_->points[i].x;
@@ -313,10 +320,11 @@ void VoxelLayer::raytraceFreespace(const Observation& clearing_observation, doub
     double t = 1.0;
 
     // we can only raytrace to a maximum z height
-    if (wpz > max_obstacle_height_)
+    const double max_z = std::min(max_obstacle_height_, size_z_ * z_resolution_ );
+    if (wpz > max_z)
     {
       // we know we want the vector's z value to be max_z
-      t = std::max(0.0, std::min(t, (max_obstacle_height_ - 0.01 - oz) / c));
+      t = std::max(0.0, std::min(t, (max_z - 0.01 - oz) / c));
     }
     // and we can only raytrace down to the floor
     else if (wpz < origin_z_)
@@ -350,8 +358,9 @@ void VoxelLayer::raytraceFreespace(const Observation& clearing_observation, doub
     wpz = oz + c * t;
 
     double point_x, point_y, point_z;
-    if (worldToMap3DFloat(wpx, wpy, wpz, point_x, point_y, point_z))
+    worldToMap3DFloat(wpx, wpy, wpz, point_x, point_y, point_z);
     {
+      point_count++;
       unsigned int cell_raytrace_range = cellDistance(clearing_observation.raytrace_range_);
 
       // voxel_grid_.markVoxelLine(sensor_x, sensor_y, sensor_z, point_x, point_y, point_z);
